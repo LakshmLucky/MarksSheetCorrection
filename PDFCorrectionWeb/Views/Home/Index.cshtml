@@ -1,0 +1,608 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PDF Answer Sheet Correction Tool</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"></script>
+    <style>
+        .upload-area {
+            min-height: 200px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+            .upload-area:hover, .upload-area.dragover {
+                background-color: var(--bs-primary-bg-subtle) !important;
+                border-color: var(--bs-primary) !important;
+            }
+
+        #pdfCanvas {
+            cursor: crosshair;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        /* The annotation-overlay and annotation-point classes are no longer needed for drawing,
+                   as the server modifies the PDF directly. You can remove them if you don't plan to show
+                   temporary client-side markers before server confirmation.
+                   I'll keep them simplified for now to show interaction. */
+        .annotation-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            pointer-events: none; /* Allows clicks to pass through to the canvas */
+        }
+
+        .annotation-point {
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            border: 2px solid white;
+            cursor: pointer;
+            transform: translate(-50%, -50%); /* Center the point */
+            z-index: 10;
+        }
+
+            .annotation-point.correct {
+                background: var(--bs-success);
+            }
+
+            .annotation-point.wrong {
+                background: var(--bs-danger);
+            }
+
+            .annotation-point.custom {
+                background: var(--bs-purple, #6f42c1);
+            }
+
+            .annotation-point.circle {
+                border-radius: 50%;
+            }
+
+            .annotation-point.square {
+                border-radius: 2px;
+            }
+
+        .tool-active {
+            opacity: 1 !important;
+            border: 2px solid var(--bs-primary); /* Highlight active tool */
+        }
+
+        .tool-inactive {
+            opacity: 0.8;
+        }
+    </style>
+</head>
+<body class="bg-light">
+    <div class="container-fluid">
+        <div class="row">
+            <div class="col-12">
+                <div class="bg-white border-bottom shadow-sm mb-4">
+                    <div class="container py-4 text-center">
+                        <h1 class="display-5 fw-light text-primary mb-2">PDF Answer Sheet Correction Tool</h1>
+                        <p class="lead text-muted">Upload, annotate, and save corrected answer sheets with professional marking tools</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="container">
+            <div id="uploadSection" class="row justify-content-center mb-4">
+                <div class="col-md-8 col-lg-6">
+                    <div class="card shadow">
+                        <div class="card-body">
+                            <div class="upload-area border border-2 border-dashed rounded p-5 text-center bg-light" id="uploadArea">
+                                <div class="mb-3">
+                                    <i class="fas fa-file-pdf fa-4x text-muted"></i>
+                                </div>
+                                <h4 class="mb-3">Upload PDF Answer Sheet</h4>
+                                <p class="text-muted mb-3">Drag and drop your PDF file here or click to browse</p>
+                                <input type="file" id="pdfFileInput" accept=".pdf" class="d-none" />
+                                <button type="button" class="btn btn-primary btn-lg" onclick="document.getElementById('pdfFileInput').click()">
+                                    <i class="fas fa-upload me-2"></i>Choose PDF File
+                                </button>
+                            </div>
+                            <div id="uploadStatus" class="mt-3"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="workspace" class="d-none">
+                <div class="row">
+                    <div class="col-lg-3 col-md-4 mb-4">
+                        <div class="card shadow h-100">
+                            <div class="card-header bg-primary text-white">
+                                <h5 class="mb-0"><i class="fas fa-tools me-2"></i>Annotation Tools</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="mb-4">
+                                    <h6 class="fw-bold text-uppercase small mb-3">Quick Marking</h6>
+                                    <div class="d-grid gap-2">
+                                        <button type="button" class="btn btn-success tool-inactive" id="btnCorrect">
+                                            <i class="fas fa-check me-2"></i>Mark Correct
+                                        </button>
+                                        <button type="button" class="btn btn-danger tool-inactive" id="btnWrong">
+                                            <i class="fas fa-times me-2"></i>Mark Wrong
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div class="mb-4">
+                                    <h6 class="fw-bold text-uppercase small mb-3">Shape Options</h6>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="radio" name="shape" value="square" id="shapeSquare" checked>
+                                        <label class="form-check-label" for="shapeSquare">
+                                            <i class="fas fa-square me-2"></i>Square
+                                        </label>
+                                    </div>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="radio" name="shape" value="circle" id="shapeCircle">
+                                        <label class="form-check-label" for="shapeCircle">
+                                            <i class="fas fa-circle me-2"></i>Circle
+                                        </label>
+                                    </div>
+                                </div>
+
+                                <div class="mb-4">
+                                    <h6 class="fw-bold text-uppercase small mb-3">Custom Annotation</h6>
+                                    <div class="input-group mb-2">
+                                        <input type="text" id="customText" placeholder="Enter annotation text..." class="form-control">
+                                    </div>
+                                    <div class="d-grid">
+                                        <button type="button" class="btn btn-purple bg-purple text-white tool-inactive" id="btnCustom" style="background-color: #6f42c1;">
+                                            <i class="fas fa-plus me-2"></i>Add Custom
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <h6 class="fw-bold text-uppercase small mb-3">Document Actions</h6>
+                                    <div class="d-grid gap-2">
+                                        <button type="button" class="btn btn-warning" id="btnDownload">
+                                            <i class="fas fa-download me-2"></i>Download PDF
+                                        </button>
+                                        <button type="button" class="btn btn-secondary" id="btnReset">
+                                            <i class="fas fa-redo me-2"></i>Reset Document
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="col-lg-9 col-md-8">
+                        <div class="card shadow h-100">
+                            <div class="card-header bg-light">
+                                <div class="d-flex justify-content-between align-items-center flex-wrap">
+                                    <div class="btn-group" role="group">
+                                        <button type="button" class="btn btn-outline-secondary btn-sm" id="prevPage">
+                                            <i class="fas fa-chevron-left"></i> Previous
+                                        </button>
+                                        <button type="button" class="btn btn-outline-secondary btn-sm" id="nextPage">
+                                            Next <i class="fas fa-chevron-right"></i>
+                                        </button>
+                                    </div>
+
+                                    <span class="badge bg-secondary">
+                                        Page <span id="currentPage">1</span> of <span id="totalPages">1</span>
+                                    </span>
+
+                                    <div class="btn-group" role="group">
+                                        <button type="button" class="btn btn-outline-secondary btn-sm" id="zoomOut">
+                                            <i class="fas fa-minus"></i>
+                                        </button>
+                                        <span class="btn btn-outline-secondary btn-sm disabled" id="zoomLevel">100%</span>
+                                        <button type="button" class="btn btn-outline-secondary btn-sm" id="zoomIn">
+                                            <i class="fas fa-plus"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="card-body p-0">
+                                <div class="position-relative overflow-auto bg-secondary bg-opacity-10" style="min-height: 500px;">
+                                    <div class="d-flex justify-content-center align-items-center h-100 p-3">
+                                        <canvas id="pdfCanvas" class="bg-white"></canvas>
+                                        <div class="annotation-overlay" id="annotationOverlay"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="fixed-bottom">
+            <div class="bg-dark text-white py-2">
+                <div class="container">
+                    <div class="row">
+                        <div class="col text-center">
+                            <small id="statusBar">Ready - Please upload a PDF file to begin correction</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Set up the PDF.js worker source
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+        class PDFCorrectionApp {
+            constructor() {
+                this.currentPdf = null;
+                this.currentPage = 1;
+                this.totalPages = 0;
+                this.scale = 1.0;
+                this.uploadedFileName = ''; // This will store the server-generated GUID filename
+                this.originalClientFileName = ''; // This will store the user's original filename
+                this.selectedTool = null; // 'correct', 'wrong', 'custom'
+                this.selectedShape = 'square'; // 'square', 'circle'
+
+                this.initializeEventListeners();
+                this.updateStatus('Ready - Please upload a PDF file to begin correction');
+            }
+
+            initializeEventListeners() {
+                const fileInput = document.getElementById('pdfFileInput');
+                const uploadArea = document.getElementById('uploadArea');
+
+                fileInput.addEventListener('change', (e) => this.handleFileSelect(e));
+                // Only allow click on upload area if no PDF is loaded
+                uploadArea.addEventListener('click', () => {
+                    if (!this.uploadedFileName) {
+                        fileInput.click();
+                    }
+                });
+                uploadArea.addEventListener('dragover', (e) => this.handleDragOver(e));
+                uploadArea.addEventListener('drop', (e) => this.handleDrop(e));
+                uploadArea.addEventListener('dragleave', (e) => this.handleDragLeave(e)); // Added dragleave
+
+                document.getElementById('btnCorrect').addEventListener('click', () => this.setTool('correct'));
+                document.getElementById('btnWrong').addEventListener('click', () => this.setTool('wrong'));
+                document.getElementById('btnCustom').addEventListener('click', () => this.setTool('custom')); // Set tool for custom text
+
+                document.querySelectorAll('input[name="shape"]').forEach(radio => {
+                    radio.addEventListener('change', (e) => this.selectedShape = e.target.value);
+                });
+
+                document.getElementById('prevPage').addEventListener('click', () => this.previousPage());
+                document.getElementById('nextPage').addEventListener('click', () => this.nextPage());
+                document.getElementById('zoomIn').addEventListener('click', () => this.zoomIn());
+                document.getElementById('zoomOut').addEventListener('click', () => this.zoomOut());
+
+                document.getElementById('pdfCanvas').addEventListener('click', (e) => this.handleCanvasClick(e));
+
+                document.getElementById('btnDownload').addEventListener('click', () => this.downloadPdf());
+                document.getElementById('btnReset').addEventListener('click', () => this.resetDocument());
+            }
+
+            handleDragOver(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                document.getElementById('uploadArea').classList.add('dragover');
+            }
+
+            handleDragLeave(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                document.getElementById('uploadArea').classList.remove('dragover');
+            }
+
+            handleDrop(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                document.getElementById('uploadArea').classList.remove('dragover');
+
+                const files = e.dataTransfer.files;
+                if (files.length > 0 && files[0].type === 'application/pdf') {
+                    this.uploadFile(files[0]);
+                } else {
+                    this.updateStatus('Only PDF files are supported.', 'error');
+                }
+            }
+
+            handleFileSelect(e) {
+                const file = e.target.files[0];
+                if (file) {
+                    if (file.type === 'application/pdf') {
+                        this.uploadFile(file);
+                    } else {
+                        this.updateStatus('Only PDF files are supported.', 'error');
+                    }
+                }
+            }
+
+            async uploadFile(file) {
+                this.updateStatus('Uploading PDF file...', 'info');
+                const formData = new FormData();
+                formData.append('pdfFile', file);
+
+                try {
+                    const response = await fetch('/Home/UploadPdf', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    const result = await response.json();
+
+                    if (result.success) {
+                        this.uploadedFileName = result.fileName; // Server-generated GUID filename
+                        this.originalClientFileName = result.originalName; // User's original filename
+                        this.totalPages = result.pages;
+                        this.currentPage = 1; // Reset to first page on new upload
+                        this.scale = 1.0; // Reset zoom
+                        this.annotations = []; // Clear client-side annotations
+
+                        document.getElementById('totalPages').textContent = this.totalPages;
+                        this.updateStatus(result.message, 'success');
+                        this.showWorkspace();
+                        await this.renderPdfFromUrl(`/uploads/${this.uploadedFileName}`); // Render the uploaded PDF from server
+                    } else {
+                        this.updateStatus(`Upload failed: ${result.message}`, 'error');
+                    }
+                } catch (error) {
+                    console.error('Upload error:', error);
+                    this.updateStatus(`An error occurred during upload: ${error.message}`, 'error');
+                }
+            }
+
+            async renderPdfFromUrl(pdfUrl) {
+                try {
+                    const pdf = await pdfjsLib.getDocument(pdfUrl).promise;
+                    this.currentPdf = pdf;
+                    await this.renderPage(this.currentPage);
+                } catch (error) {
+                    console.error('Error loading PDF from URL:', error);
+                    this.updateStatus(`Error loading PDF from server: ${error.message}`, 'error');
+                }
+            }
+
+            async renderPage(pageNumber) {
+                if (!this.currentPdf) return;
+
+                try {
+                    const page = await this.currentPdf.getPage(pageNumber);
+                    const canvas = document.getElementById('pdfCanvas');
+                    const context = canvas.getContext('2d');
+
+                    const viewport = page.getViewport({ scale: this.scale });
+                    canvas.width = viewport.width;
+                    canvas.height = viewport.height;
+
+                    await page.render({
+                        canvasContext: context,
+                        viewport: viewport
+                    }).promise;
+
+                    this.currentPage = pageNumber;
+                    document.getElementById('currentPage').textContent = pageNumber;
+                    document.getElementById('zoomLevel').textContent = Math.round(this.scale * 100) + '%';
+
+                    // Since annotations are now server-side, you don't need to render them from a client-side array.
+                    // The re-rendering of the PDF itself will show them.
+                    // The `renderAnnotations` function below is for temporary visual cues before server confirmation
+                    // or for displaying existing annotations if you fetch them from the server.
+                    // For now, let's keep it minimal if you only want to show marks after server adds them.
+                    // If you want interactive, temporary marks *before* server confirmation, you'd re-introduce client-side annotation drawing.
+                    // For this fix, we'll assume the server is the source of truth for annotations.
+                    this.clearClientAnnotations(); // Clear any temporary client-side markers.
+
+                } catch (error) {
+                    console.error('Error rendering page:', error);
+                    this.updateStatus(`Error rendering page: ${error.message}`, 'error');
+                }
+            }
+
+            showWorkspace() {
+                document.getElementById('uploadSection').classList.add('d-none');
+                document.getElementById('workspace').classList.remove('d-none');
+            }
+
+            setTool(tool) {
+                this.selectedTool = tool;
+
+                document.querySelectorAll('#btnCorrect, #btnWrong, #btnCustom').forEach(btn => {
+                    btn.classList.remove('tool-active');
+                    btn.classList.add('tool-inactive');
+                });
+
+                if (tool === 'correct') {
+                    document.getElementById('btnCorrect').classList.add('tool-active');
+                    document.getElementById('btnCorrect').classList.remove('tool-inactive');
+                } else if (tool === 'wrong') {
+                    document.getElementById('btnWrong').classList.add('tool-active');
+                    document.getElementById('btnWrong').classList.remove('tool-inactive');
+                } else if (tool === 'custom') {
+                    document.getElementById('btnCustom').classList.add('tool-active');
+                    document.getElementById('btnCustom').classList.remove('tool-inactive');
+                }
+                this.updateStatus(`Selected tool: ${tool}`, 'info');
+            }
+
+            // This now handles sending the annotation to the server
+            async handleCanvasClick(e) {
+                if (!this.uploadedFileName || !this.selectedTool) {
+                    this.updateStatus('Please upload a PDF and select an annotation tool.', 'warning');
+                    return;
+                }
+
+                const canvas = document.getElementById('pdfCanvas');
+                const rect = canvas.getBoundingClientRect();
+
+                // Calculate coordinates relative to the canvas, scaled to PDF.js's internal coordinates
+                const x = (e.clientX - rect.left) / this.scale;
+                const y = (e.clientY - rect.top) / this.scale;
+
+                let annotationText = '';
+                if (this.selectedTool === 'custom') {
+                    annotationText = document.getElementById('customText').value.trim();
+                    if (!annotationText) {
+                        this.updateStatus('Please enter text for custom annotation.', 'warning');
+                        return;
+                    }
+                } else {
+                    annotationText = this.getToolText(this.selectedTool);
+                }
+
+                this.updateStatus('Adding annotation...', 'info');
+
+                try {
+                    const response = await fetch('/Home/AddAnnotation', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            fileName: this.uploadedFileName,
+                            pageNumber: this.currentPage,
+                            x: x,
+                            y: y,
+                            type: this.selectedTool,
+                            shape: this.selectedShape,
+                            text: annotationText
+                        })
+                    });
+
+                    const result = await response.json();
+
+                    if (result.success) {
+                        this.updateStatus(result.message, 'success');
+                        document.getElementById('customText').value = ''; // Clear custom text
+                        // Re-render the PDF from the server's modified version to show the annotation
+                        await this.renderPdfFromUrl(`/uploads/${this.uploadedFileName}?t=${new Date().getTime()}`); // Add cache buster
+                    } else {
+                        this.updateStatus(`Annotation failed: ${result.message}`, 'error');
+                    }
+                } catch (error) {
+                    console.error('Error adding annotation:', error);
+                    this.updateStatus(`An error occurred while adding annotation: ${error.message}`, 'error');
+                }
+            }
+
+            getToolText(tool) {
+                return tool === 'correct' ? '✓ Correct' :
+                       tool === 'wrong' ? '✗ Wrong' : '';
+            }
+
+            clearClientAnnotations() {
+                const overlay = document.getElementById('annotationOverlay');
+                overlay.innerHTML = '';
+            }
+
+            previousPage() {
+                if (this.currentPage > 1) {
+                    this.renderPage(this.currentPage - 1);
+                } else {
+                    this.updateStatus('You are on the first page.', 'warning');
+                }
+            }
+
+            nextPage() {
+                if (this.currentPage < this.totalPages) {
+                    this.renderPage(this.currentPage + 1);
+                } else {
+                    this.updateStatus('You are on the last page.', 'warning');
+                }
+            }
+
+            zoomIn() {
+                this.scale = Math.min(this.scale * 1.25, 3.0);
+                this.renderPage(this.currentPage);
+                this.updateStatus(`Zoom: ${Math.round(this.scale * 100)}%`, 'info');
+            }
+
+            zoomOut() {
+                this.scale = Math.max(this.scale / 1.25, 0.5);
+                this.renderPage(this.currentPage);
+                this.updateStatus(`Zoom: ${Math.round(this.scale * 100)}%`, 'info');
+            }
+
+            downloadPdf() {
+                if (!this.uploadedFileName) {
+                    this.updateStatus('No PDF available for download. Please upload one first.', 'warning');
+                    return;
+                }
+                this.updateStatus('Initiating PDF download...', 'info');
+                // Trigger file download via a hidden anchor tag or by directly setting window.location
+                const downloadLink = document.createElement('a');
+                downloadLink.href = `/Home/DownloadPdf?fileName=${this.uploadedFileName}`;
+                downloadLink.download = `${this.originalClientFileName.replace('.pdf', '')}_corrected.pdf`; // Use original name for download
+                document.body.appendChild(downloadLink);
+                downloadLink.click();
+                document.body.removeChild(downloadLink);
+                this.updateStatus('Download started.', 'success');
+            }
+
+            resetDocument() {
+                if (confirm('Are you sure you want to reset the application? This will clear the currently loaded PDF and all its annotations.')) {
+                    this.currentPdf = null;
+                    this.currentPage = 1;
+                    this.totalPages = 0;
+                    this.scale = 1.0;
+                    this.uploadedFileName = '';
+                    this.originalClientFileName = '';
+                    this.selectedTool = null;
+                    this.selectedShape = 'square';
+                    document.getElementById('customText').value = '';
+
+                    // Reset UI elements
+                    document.getElementById('currentPage').textContent = '1';
+                    document.getElementById('totalPages').textContent = '1';
+                    document.getElementById('zoomLevel').textContent = '100%';
+                    document.getElementById('pdfCanvas').getContext('2d').clearRect(0, 0, document.getElementById('pdfCanvas').width, document.getElementById('pdfCanvas').height);
+                    this.clearClientAnnotations(); // Clear any visual cues
+
+                    document.getElementById('uploadSection').classList.remove('d-none');
+                    document.getElementById('workspace').classList.add('d-none');
+
+                    // Reset tool button visual states
+                    document.querySelectorAll('#btnCorrect, #btnWrong, #btnCustom').forEach(btn => {
+                        btn.classList.remove('tool-active');
+                        btn.classList.add('tool-inactive');
+                    });
+
+                    this.updateStatus('Application reset. Please upload a PDF file to begin correction.', 'info');
+                }
+            }
+
+            updateStatus(message, type = 'info') {
+                const statusBar = document.getElementById('statusBar');
+                const uploadStatus = document.getElementById('uploadStatus');
+
+                statusBar.textContent = message;
+
+                if (uploadStatus) {
+                    // Clear previous alerts
+                    uploadStatus.innerHTML = '';
+                    if (message && type !== 'info') { // Only show alerts for success/error
+                        const alertClass = type === 'error' ? 'alert-danger' : 'alert-success';
+                        uploadStatus.innerHTML = `<div class="alert ${alertClass} mb-0">${message}</div>`;
+                    }
+                }
+                // Automatically clear success/info messages after a few seconds
+                if (type === 'success' || type === 'info') {
+                    setTimeout(() => {
+                        if (statusBar.textContent === message) { // Only clear if it's still the same message
+                            statusBar.textContent = 'Ready';
+                        }
+                        if (uploadStatus.innerHTML.includes(message)) {
+                             uploadStatus.innerHTML = '';
+                        }
+                    }, 5000); // Clear after 5 seconds
+                }
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            new PDFCorrectionApp();
+        });
+    </script>
+</body>
+</html>
